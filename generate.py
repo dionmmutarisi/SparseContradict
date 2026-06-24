@@ -24,36 +24,61 @@ def _strip_fences(text: str) -> str:
     return m.group(1).strip() if m else text.strip()
 
 
+def _count_existing(output_path: str) -> dict[tuple[int, int], int]:
+    """Count already-accepted documents per (distance, distractor_count) cell."""
+    counts: dict[tuple[int, int], int] = {}
+    if not os.path.exists(output_path):
+        return counts
+    with open(output_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                key = (rec["distance"], rec["distractor_count"])
+                counts[key] = counts.get(key, 0) + 1
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return counts
+
+
 def generate_dataset(
     output_path: str,
     *,
     max_cells: int | None = None,
     max_per_cell: int | None = None,
 ) -> None:
-    """
-    Generate the full SparseContradict dataset and write to output_path (JSONL).
-
-    Optional keyword arguments (for dry runs only):
-      max_cells     – stop after this many grid cells  (None = all 30)
-      max_per_cell  – generate at most this many docs per cell (None = 50)
-    """
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
     docs_per_cell = max_per_cell if max_per_cell is not None else DOCUMENTS_PER_CELL
     grid = EXPERIMENTAL_GRID[:max_cells] if max_cells is not None else EXPERIMENTAL_GRID
 
+    existing = _count_existing(output_path)
+
     with open(output_path, "a", encoding="utf-8") as out_f:
         for cell_idx, (distance, distractor_count) in enumerate(grid):
+            already_done = existing.get((distance, distractor_count), 0)
+
+            if already_done >= docs_per_cell:
+                print(
+                    f"\n[cell {cell_idx + 1}/{len(grid)}] "
+                    f"distance={distance}  distractors={distractor_count}  "
+                    f"SKIPPING ({already_done}/{docs_per_cell} already done)"
+                )
+                continue
+
             print(
                 f"\n[cell {cell_idx + 1}/{len(grid)}] "
-                f"distance={distance}  distractors={distractor_count}"
+                f"distance={distance}  distractors={distractor_count}  "
+                f"(resuming from {already_done}/{docs_per_cell})"
             )
 
-            accepted = 0
+            accepted = already_done
             consecutive_skips = 0
+
             while accepted < docs_per_cell:
-                # Sample document dimensions
                 n = random.randint(DOCUMENT_LENGTH_MIN, DOCUMENT_LENGTH_MAX)
                 max_i = n - distance
                 if max_i < 1:
@@ -93,7 +118,7 @@ def generate_dataset(
                             data = json.loads(text)
                         except json.JSONDecodeError as exc:
                             last_error = f"JSON parse error: {exc}"
-                            print(f"RETRY (json error)")
+                            print("RETRY (json error)")
                             continue
 
                         valid, reason = validate_document(data, config)

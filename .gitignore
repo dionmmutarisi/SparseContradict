@@ -25,10 +25,11 @@ env/
 htmlcov/
 
 # Generated outputs
-/data/
+
 /results/
 /figures/
 
 # Jupyter / notebook checkpoints
 .ipynb_checkpoints/
+
 !data/documents.jsonl
