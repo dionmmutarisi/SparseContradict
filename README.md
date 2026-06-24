@@ -17,8 +17,8 @@
 | Document length | 52–65 sentences (sampled uniformly per document) |
 | Distance levels | 5, 10, 20, 30, 40, 48 sentences |
 | Distractor count levels | 0, 2, 4, 6, 8 pairs |
-| Documents per cell | 50 |
-| Total documents | 1,500 (6 × 5 × 50) |
+| Documents per cell | 25 |
+| Total documents | 750 (6 × 5 × 25) |
 | Domain | Synthetic fictional financial companies |
 | Task | Extractive contradiction localisation (zero-shot) |
 
