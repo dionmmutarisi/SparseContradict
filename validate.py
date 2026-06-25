@@ -20,12 +20,12 @@ def validate_document(data: dict, config: "DocConfig") -> tuple[bool, str]:
         if key not in data:
             return False, f"missing key '{key}'"
 
-    # 2. sentences is a list of strings with length n, and n in [52, 65]
+    # 2. sentences is a list of strings with length n, and n in [52, 68]
     sentences = data["sentences"]
     if not isinstance(sentences, list):
         return False, "sentences is not a list"
-    if not (52 <= config.n <= 65):
-        return False, f"config.n={config.n} is outside allowed range [52, 65]"
+    if not (52 <= config.n <= 68):
+        return False, f"config.n={config.n} is outside allowed range [52, 68]"
     if len(sentences) != config.n:
         return False, f"expected {config.n} sentences, got {len(sentences)}"
     if not all(isinstance(s, str) for s in sentences):
