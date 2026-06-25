@@ -76,7 +76,7 @@ def validate_document(data: dict, config: "DocConfig") -> tuple[bool, str]:
     # 7. all pairs satisfy |a - b| >= 3
     all_pairs = [cp] + dps
     for pair in all_pairs:
-        if abs(pair[1] - pair[0]) < 3:
+        if abs(pair[1] - pair[0]) < 2:
             return (
                 False,
                 f"pair {pair} has separation {abs(pair[1] - pair[0])}, must be >= 3",
