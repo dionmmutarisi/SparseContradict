@@ -1,18 +1,15 @@
 import json
 import os
-from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
-import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy import stats
 
-from config import DISTANCE_LEVELS, DISTRACTOR_COUNT_LEVELS, MODELS
-from score import aggregate, chance_accuracy
+from config import DISTANCE_LEVELS, DISTRACTOR_COUNT_LEVELS
+from score import aggregate, chance_accuracy, confidence_interval
 
 _FIGURES_DIR = "figures"
 
@@ -23,18 +20,20 @@ _MODEL_DISPLAY = {
     "phi-3.5-mini": "Phi-3.5 Mini",
 }
 
-# Ordered largest → smallest parameter count for Figure 3
+# Ordered strongest/largest reference → smallest local model.
 _MODEL_ORDER = ["gpt-4o-mini", "llama-3.1-8b", "mistral-7b", "phi-3.5-mini"]
 
 _MARKERS = ["o", "s", "^", "D"]
-# Muted, publication-friendly palette with strong contrast for model lines.
+
+# Academic qualitative palette — high contrast, colourblind-safe (ColorBrewer-inspired).
+# Navy, Crimson, Forest green, Amber.
 _COLORS = [
-    "#2E5D7F",  # slate blue
-    "#B25D5D",  # muted terracotta
-    "#5B8C6E",  # muted sage
-    "#7B5E8C",  # muted plum
+    "#1B4F8A",  # navy
+    "#C0392B",  # crimson
+    "#1A7A4A",  # forest green
+    "#D4870A",  # amber
 ]
-_HEATMAP_CMAP = "YlGnBu"
+_HEATMAP_CMAP = "Blues"
 
 
 def _load_rows(results_paths: list[str]) -> list[dict]:
@@ -56,81 +55,111 @@ def _save(fig, name: str) -> None:
     print(f"  Saved {base}.pdf and {base}.png")
 
 
-# ---------------------------------------------------------------------------
-# Figure 1: Accuracy vs. distance (collapsed across distractors)
-# ---------------------------------------------------------------------------
+def _ordered_models_present(df: pd.DataFrame) -> list[str]:
+    return [m for m in _MODEL_ORDER if m in set(df["model"])]
 
-def _figure1(agg_rows: list[dict]) -> None:
+
+def _summarise_binary_accuracy(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    """
+    Summarise per-document binary correctness into accuracy and normal-approximation
+    binomial 95% confidence intervals. This matches the thesis definition:
+    Acc ± 1.96 * sqrt(Acc(1 - Acc) / n).
+    """
+    summary = (
+        df.groupby(group_cols, as_index=False)
+        .agg(
+            n_documents=("correct", "size"),
+            n_correct=("correct", "sum"),
+            mean_n_sentences=("n_sentences", "mean"),
+        )
+    )
+    summary["accuracy"] = summary["n_correct"] / summary["n_documents"]
+
+    ci_values = [
+        confidence_interval(float(row.accuracy), int(row.n_documents))
+        for row in summary.itertuples(index=False)
+    ]
+    summary["ci_low"] = [lo for lo, _ in ci_values]
+    summary["ci_high"] = [hi for _, hi in ci_values]
+    summary["chance_accuracy"] = summary["mean_n_sentences"].apply(chance_accuracy)
+    return summary
+
+
+# Figure 1: Accuracy vs. distance, collapsed across distractor levels
+
+
+def _figure1(rows: list[dict]) -> None:
     sns.set_style("whitegrid")
     fig, ax = plt.subplots(figsize=(7, 5))
 
-    df = pd.DataFrame(agg_rows)
-
-    # Mean chance accuracy across all documents
-    mean_chance = df["chance_accuracy"].mean()
-
-    models_present = [m for m in _MODEL_ORDER if m in df["model"].values]
+    raw_df = pd.DataFrame(rows)
+    df = _summarise_binary_accuracy(raw_df, ["model", "distance"])
+    models_present = _ordered_models_present(df)
 
     for model, marker, color in zip(
         models_present,
         _MARKERS[: len(models_present)],
         _COLORS[: len(models_present)],
     ):
-        mdf = (
-            df[df["model"] == model]
-            .groupby("distance", as_index=False)
-            .agg(
-                accuracy=("accuracy", "mean"),
-                ci_low=("ci_low", "mean"),
-                ci_high=("ci_high", "mean"),
-            )
-            .sort_values("distance")
-        )
-        distances = mdf["distance"].values
-        accs = mdf["accuracy"].values
-        lo = mdf["ci_low"].values
-        hi = mdf["ci_high"].values
+        mdf = df[df["model"] == model].sort_values("distance")
+        x = mdf["distance"].to_numpy(dtype=float)
+        y = mdf["accuracy"].to_numpy(dtype=float)
+        ci_low = mdf["ci_low"].to_numpy(dtype=float)
+        ci_high = mdf["ci_high"].to_numpy(dtype=float)
 
         ax.plot(
-            distances, accs,
-            marker=marker, color=color, linewidth=1.8, markersize=6,
+            x,
+            y,
+            marker=marker,
+            color=color,
+            linewidth=1.8,
+            markersize=6,
             label=_MODEL_DISPLAY.get(model, model),
         )
-        ax.fill_between(distances, lo, hi, alpha=0.15, color=color)
+        ax.fill_between(
+            x,
+            ci_low,
+            ci_high,
+            color=color,
+            alpha=0.12,
+            linewidth=0,
+        )
 
+    # Chance varies slightly with document length; use the empirical mean over
+    # evaluated documents as the displayed reference line.
+    chance_level = raw_df["n_sentences"].apply(chance_accuracy).mean()
     ax.axhline(
-        mean_chance, linestyle="--", color="black", linewidth=1.2,
-        label=f"chance (≈ {mean_chance:.4f})",
+        chance_level,
+        color="#444444",
+        linestyle=":",
+        linewidth=1.5,
+        label=f"Chance baseline ({chance_level:.4f})",
     )
 
-    ax.set_xlim(left=0)
+    ax.set_xlim(DISTANCE_LEVELS[0] - 1, DISTANCE_LEVELS[-1] + 1)
     ax.set_ylim(0.0, 1.0)
     ax.set_xticks(DISTANCE_LEVELS)
-    ax.set_xlabel("Contradiction distance (sentences)", fontsize=12)
-    ax.set_ylabel("Mean accuracy", fontsize=12)
-    ax.set_title("Figure 1: Accuracy vs. contradiction distance", fontsize=13)
-    ax.legend(loc="upper right", fontsize=9)
+    ax.set_xlabel("Contradiction distance |j − i| (sentence indices)", fontsize=12)
+    ax.set_ylabel("Accuracy", fontsize=12)
+    ax.set_title("Accuracy vs. contradiction distance", fontsize=13)
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.9)
 
     _save(fig, "figure1_accuracy_vs_distance")
     plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
 # Figure 2: Heatmap grid
-# ---------------------------------------------------------------------------
+
 
 def _figure2(agg_rows: list[dict]) -> None:
     sns.set_style("white")
     df = pd.DataFrame(agg_rows)
 
-    models_present = [m for m in _MODEL_ORDER if m in df["model"].values]
-    vmax = df["accuracy"].max()
+    models_present = _ordered_models_present(df)
+    vmax = 1.0  # Fixed full range so colour scale is interpretable across models.
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
     axes_flat = axes.flatten()
-
-    # Shared colorbar image reference
-    img = None
 
     for ax_idx, model in enumerate(models_present):
         ax = axes_flat[ax_idx]
@@ -142,13 +171,12 @@ def _figure2(agg_rows: list[dict]) -> None:
             values="accuracy",
             aggfunc="mean",
         )
-        # Ensure canonical ordering
         pivot = pivot.reindex(
             index=DISTRACTOR_COUNT_LEVELS,
             columns=DISTANCE_LEVELS,
         )
 
-        img = sns.heatmap(
+        sns.heatmap(
             pivot,
             ax=ax,
             vmin=0.0,
@@ -161,14 +189,12 @@ def _figure2(agg_rows: list[dict]) -> None:
             cbar=False,
         )
         ax.set_title(_MODEL_DISPLAY.get(model, model), fontsize=11)
-        ax.set_xlabel("Distance" if ax_idx >= 2 else "", fontsize=10)
-        ax.set_ylabel("Distractors" if ax_idx % 2 == 0 else "", fontsize=10)
+        ax.set_xlabel("Distance |j − i|" if ax_idx >= 2 else "", fontsize=10)
+        ax.set_ylabel("Distractor pairs" if ax_idx % 2 == 0 else "", fontsize=10)
 
-    # Hide any unused subplots
     for ax_idx in range(len(models_present), 4):
         axes_flat[ax_idx].set_visible(False)
 
-    # Shared colorbar
     sm = plt.cm.ScalarMappable(
         cmap=_HEATMAP_CMAP, norm=plt.Normalize(vmin=0.0, vmax=vmax)
     )
@@ -177,7 +203,7 @@ def _figure2(agg_rows: list[dict]) -> None:
     cbar.set_label("Mean accuracy", fontsize=11)
 
     fig.suptitle(
-        "Figure 2: Accuracy across distance × distractor density grid",
+        "Accuracy across distance × distractor density grid",
         fontsize=13,
     )
 
@@ -185,91 +211,114 @@ def _figure2(agg_rows: list[dict]) -> None:
     plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
-# Figure 3: Degradation slopes (OLS coefficient plot)
-# ---------------------------------------------------------------------------
+# Figure 3: Degradation slopes, using WLS over per-distance accuracies
 
-def _figure3(agg_rows: list[dict]) -> None:
+
+def _wls_slope_with_ci(x, y, weights) -> tuple[float, float, float]:
+    """
+    Weighted least-squares slope and 95% CI for y ~ 1 + x.
+    The input y values are per-distance accuracies; weights are the number of
+    evaluated documents contributing to each accuracy estimate.
+    """
+    import numpy as np
+
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    w = np.asarray(weights, dtype=float)
+
+    if len(x) < 3:
+        raise ValueError("Need at least three distance levels to estimate a slope CI.")
+
+    x_design = np.column_stack([np.ones_like(x), x])
+    xtw = x_design.T * w
+    xtwx_inv = np.linalg.inv(xtw @ x_design)
+    beta = xtwx_inv @ (xtw @ y)
+    fitted = x_design @ beta
+    resid = y - fitted
+
+    df_resid = len(x) - x_design.shape[1]
+    sigma2 = float((w * resid**2).sum() / df_resid)
+    cov_beta = sigma2 * xtwx_inv
+    slope = float(beta[1])
+    slope_se = float(cov_beta[1, 1] ** 0.5)
+    t_crit = float(stats.t.ppf(0.975, df=df_resid))
+
+    return slope, slope - t_crit * slope_se, slope + t_crit * slope_se
+
+
+def _figure3(rows: list[dict]) -> None:
     sns.set_style("whitegrid")
-    df = pd.DataFrame(agg_rows)
+    raw_df = pd.DataFrame(rows)
+    df = _summarise_binary_accuracy(raw_df, ["model", "distance"])
 
-    models_present = [m for m in _MODEL_ORDER if m in df["model"].values]
+    models_present = _ordered_models_present(df)
 
     slopes, ci_lows, ci_highs, labels = [], [], [], []
 
     for model in models_present:
-        mdf = (
-            df[df["model"] == model]
-            .groupby("distance", as_index=False)
-            .agg(
-                accuracy=("accuracy", "mean"),
-                n_documents=("n_documents", "sum"),
-            )
+        mdf = df[df["model"] == model].sort_values("distance")
+        slope, ci_lo, ci_hi = _wls_slope_with_ci(
+            x=mdf["distance"].to_numpy(dtype=float),
+            y=mdf["accuracy"].to_numpy(dtype=float),
+            weights=mdf["n_documents"].to_numpy(dtype=float),
         )
-        x = mdf["distance"].values.astype(float)
-        y = mdf["accuracy"].values
-        w = mdf["n_documents"].values.astype(float)
-
-        # Weighted OLS via WLS
-        result = stats.linregress(x, y)
-        slope = result.slope
-        # 95% CI from standard error
-        t_crit = stats.t.ppf(0.975, df=len(x) - 2)
-        se = result.stderr
-        ci_lo = slope - t_crit * se
-        ci_hi = slope + t_crit * se
 
         slopes.append(slope)
         ci_lows.append(ci_lo)
         ci_highs.append(ci_hi)
         labels.append(_MODEL_DISPLAY.get(model, model))
 
-    # Reverse so top of plot = largest model (GPT-4o-mini)
-    y_pos = list(range(len(labels)))
+    # Reverse so the top of the plot follows _MODEL_ORDER.
+    slopes_rev = list(reversed(slopes))
+    ci_lows_rev = list(reversed(ci_lows))
+    ci_highs_rev = list(reversed(ci_highs))
+    labels_rev = list(reversed(labels))
+    colors_rev = list(reversed(_COLORS[: len(labels)]))
 
-    fig, ax = plt.subplots(figsize=(7, max(3, len(labels) * 1.2)))
+    y_pos = list(range(len(labels_rev)))
 
-    for i, (slope, lo, hi, label) in enumerate(
-        zip(slopes, ci_lows, ci_highs, labels)
+    fig, ax = plt.subplots(figsize=(7, max(3, len(labels_rev) * 1.2)))
+
+    for i, (slope, lo, hi, color) in enumerate(
+        zip(slopes_rev, ci_lows_rev, ci_highs_rev, colors_rev)
     ):
         ax.errorbar(
             slope,
             i,
             xerr=[[slope - lo], [hi - slope]],
             fmt="o",
-            color=_COLORS[i % len(_COLORS)],
+            color=color,
             markersize=8,
             linewidth=1.8,
             capsize=5,
             capthick=1.5,
         )
 
-    ax.axvline(0.0, linestyle="--", color="black", linewidth=1.2)
+    ax.axvline(0.0, linestyle="--", color="#444444", linewidth=1.5)
     ax.set_yticks(y_pos)
-    ax.set_yticklabels(labels, fontsize=11)
-    ax.set_xlabel("Accuracy change per sentence of distance", fontsize=12)
+    ax.set_yticklabels(labels_rev, fontsize=11)
+    ax.set_xlabel("Accuracy change per sentence-index distance", fontsize=12)
     ax.set_ylabel("")
-    ax.set_title("Figure 3: Degradation slope by model", fontsize=13)
+    ax.set_title("Distance-degradation slope by model", fontsize=13)
 
     _save(fig, "figure3_degradation_slopes")
     plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
 # Public entry point
-# ---------------------------------------------------------------------------
+
 
 def make_all_figures(results_paths: list[str]) -> None:
     rows = _load_rows(results_paths)
     agg_rows = aggregate(rows)
 
     print("Generating Figure 1 …")
-    _figure1(agg_rows)
+    _figure1(rows)
 
     print("Generating Figure 2 …")
     _figure2(agg_rows)
 
     print("Generating Figure 3 …")
-    _figure3(agg_rows)
+    _figure3(rows)
 
     print("All figures saved to figures/")

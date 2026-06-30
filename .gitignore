@@ -24,10 +24,7 @@ env/
 .coverage
 htmlcov/
 
-# Generated outputs
 
-/results/
-/figures/
 
 # Jupyter / notebook checkpoints
 .ipynb_checkpoints/

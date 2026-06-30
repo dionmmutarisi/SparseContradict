@@ -33,9 +33,8 @@ def _load_documents(documents_path: str) -> list[dict]:
     return docs
 
 
-# ---------------------------------------------------------------------------
 # GPT-4o-mini backend
-# ---------------------------------------------------------------------------
+
 
 def _infer_openai(client, prompt: str) -> str:
     response = client.chat.completions.create(
@@ -47,9 +46,9 @@ def _infer_openai(client, prompt: str) -> str:
     return response.choices[0].message.content or ""
 
 
-# ---------------------------------------------------------------------------
+
 # HuggingFace backend
-# ---------------------------------------------------------------------------
+
 
 def _load_hf_model(model_id: str):
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -109,9 +108,8 @@ def _infer_hf_batch(tokenizer, model, prompts: list[str]) -> list[str]:
     return results
 
 
-# ---------------------------------------------------------------------------
+
 # Main entry point
-# ---------------------------------------------------------------------------
 
 def evaluate_model(
     model_name: str,
@@ -146,7 +144,7 @@ def evaluate_model(
             model_id = HF_MODEL_IDS[model_name]
             tokenizer, model = _load_hf_model(model_id)
 
-            batch_size = 8
+            batch_size = 32
             for batch_start in range(0, len(pending), batch_size):
                 batch = pending[batch_start: batch_start + batch_size]
                 prompts = [build_inference_prompt(d["sentences"]) for d in batch]
